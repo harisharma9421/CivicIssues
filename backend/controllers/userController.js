@@ -9,6 +9,7 @@ exports.getAllUsers = async (req, res) => {
             districtId, 
             role, 
             search,
+            approvalStatus,
             sortBy = 'createdAt',
             sortOrder = 'desc'
         } = req.query;
@@ -17,6 +18,7 @@ exports.getAllUsers = async (req, res) => {
         
         if (districtId) query.districtId = districtId;
         if (role) query.role = role;
+        if (approvalStatus) query.approvalStatus = approvalStatus;
         if (search) {
             query.$or = [
                 { name: { $regex: search, $options: 'i' } },
@@ -163,5 +165,62 @@ exports.updateUserStatus = async (req, res) => {
         });
     }
 };
+
+// Super Admin: approve or reject admin signup and assign/create district
+exports.moderateAdmin = async (req, res) => {
+    try {
+        const { action, districtName, state } = req.body; // action: 'approve' | 'reject'
+        const userId = req.params.id;
+
+        const user = await User.findById(userId);
+        if (!user) return res.status(404).json({ success: false, msg: 'User not found' });
+        if (user.role !== 'admin') return res.status(400).json({ success: false, msg: 'Only admin accounts can be moderated' });
+
+        if (action === 'reject') {
+            user.approvalStatus = 'rejected';
+            await user.save();
+            return res.json({ success: true, msg: 'Admin signup rejected', user: user.profile });
+        }
+
+        // Approve: assign or create district
+        user.approvalStatus = 'approved';
+
+        let District = require('../models/District');
+        // Prefer explicit districtName/state from body; fall back to values provided at signup
+        const finalDistrictName = (districtName || user.districtName || '').trim();
+        const finalState = (state || user.state || '').trim();
+
+        if (!finalDistrictName || !finalState) {
+            return res.status(400).json({
+                success: false,
+                msg: 'District name and state are required to approve admin. Provide them in request or ensure user has these fields.'
+            });
+        }
+
+        // Enforce one admin per district
+        let district = await District.findOne({ name: finalDistrictName, state: finalState });
+        if (!district) {
+            district = await District.create({ name: finalDistrictName, state: finalState, verified: true, adminId: user._id });
+        } else {
+            if (district.adminId && district.adminId.toString() !== user._id.toString()) {
+                return res.status(400).json({ success: false, msg: 'This district already has an assigned admin' })
+            }
+            district.adminId = user._id;
+            district.verified = true;
+            await district.save();
+        }
+
+        user.districtId = district._id;
+        // Persist chosen district/state back to user profile for consistency
+        user.districtName = finalDistrictName;
+        user.state = finalState;
+        await user.save();
+
+        return res.json({ success: true, msg: 'Admin approved and district assigned', user: user.profile, district });
+    } catch (err) {
+        console.error('Moderate admin error:', err);
+        res.status(500).json({ success: false, msg: 'Error moderating admin', error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error' });
+    }
+}
 
 

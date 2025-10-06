@@ -4,8 +4,9 @@ exports.getUserNotifications = async (req, res) => {
     try {
         const { page = 1, limit = 20, isRead } = req.query;
         const userId = req.user._id;
+        const model = req.userRole === 'superAdmin' ? 'SuperAdmin' : 'User';
 
-        const query = { recipient: userId };
+        const query = { recipientId: userId, recipientModel: model };
         if (isRead !== undefined) query.isRead = isRead === 'true';
 
         const notifications = await Notification.find(query)
@@ -14,7 +15,7 @@ exports.getUserNotifications = async (req, res) => {
             .skip((page - 1) * limit);
 
         const total = await Notification.countDocuments(query);
-        const unreadCount = await Notification.countDocuments({ recipient: userId, isRead: false });
+        const unreadCount = await Notification.countDocuments({ recipientId: userId, recipientModel: model, isRead: false });
 
         res.json({
             success: true,
@@ -42,10 +43,12 @@ exports.markAsRead = async (req, res) => {
     try {
         const { notificationId } = req.params;
         const userId = req.user._id;
+        const model = req.userRole === 'superAdmin' ? 'SuperAdmin' : 'User';
 
         const notification = await Notification.findOne({
             _id: notificationId,
-            recipient: userId
+            recipientId: userId,
+            recipientModel: model
         });
 
         if (!notification) {
@@ -75,9 +78,10 @@ exports.markAsRead = async (req, res) => {
 exports.markAllAsRead = async (req, res) => {
     try {
         const userId = req.user._id;
+        const model = req.userRole === 'superAdmin' ? 'SuperAdmin' : 'User';
 
         await Notification.updateMany(
-            { recipient: userId, isRead: false },
+            { recipientId: userId, recipientModel: model, isRead: false },
             { 
                 isRead: true, 
                 readAt: new Date() 
@@ -133,7 +137,8 @@ exports.createNotification = async (req, res) => {
     try {
         const notificationData = {
             ...req.body,
-            recipient: req.user._id
+            recipientId: req.user._id,
+            recipientModel: req.userRole === 'superAdmin' ? 'SuperAdmin' : 'User'
         };
 
         const notification = new Notification(notificationData);
@@ -157,7 +162,8 @@ exports.createNotification = async (req, res) => {
 exports.getUnreadCount = async (req, res) => {
     try {
         const userId = req.user._id;
-        const unreadCount = await Notification.getUnreadCount(userId);
+        const model = req.userRole === 'superAdmin' ? 'SuperAdmin' : 'User';
+        const unreadCount = await Notification.getUnreadCount(userId, model);
 
         res.json({ 
             success: true,

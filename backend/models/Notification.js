@@ -1,10 +1,15 @@
 const mongoose = require("mongoose");
 
 const notificationSchema = new mongoose.Schema({
-    recipient: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: "User",
+    // Polymorphic recipient: User or SuperAdmin
+    recipientId: { 
+        type: mongoose.Schema.Types.ObjectId,
         required: [true, 'Recipient is required']
+    },
+    recipientModel: {
+        type: String,
+        enum: ['User', 'SuperAdmin'],
+        required: true
     },
     title: { 
         type: String, 
@@ -47,7 +52,7 @@ const notificationSchema = new mongoose.Schema({
 });
 
 // Indexes
-notificationSchema.index({ recipient: 1, createdAt: -1 });
+notificationSchema.index({ recipientId: 1, recipientModel: 1, createdAt: -1 });
 notificationSchema.index({ isRead: 1 });
 notificationSchema.index({ type: 1 });
 notificationSchema.index({ priority: 1 });
@@ -59,9 +64,9 @@ notificationSchema.methods.markAsRead = function() {
     return this.save();
 };
 
-// Get unread count for user
-notificationSchema.statics.getUnreadCount = function(userId) {
-    return this.countDocuments({ recipient: userId, isRead: false });
+// Get unread count for a recipient
+notificationSchema.statics.getUnreadCount = function(recipientId, recipientModel) {
+    return this.countDocuments({ recipientId, recipientModel, isRead: false });
 };
 
 module.exports = mongoose.model("Notification", notificationSchema);

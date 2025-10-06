@@ -7,14 +7,38 @@ class EmailService {
     }
 
     initializeTransporter() {
-        if (process.env.EMAIL_SERVICE && process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-            this.transporter = nodemailer.createTransporter({
-                service: process.env.EMAIL_SERVICE,
-                auth: {
-                    user: process.env.EMAIL_USER,
-                    pass: process.env.EMAIL_PASS
-                }
+        // Preferred: explicit SMTP host/port
+        if (process.env.EMAIL_HOST && process.env.EMAIL_PORT && process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+            this.transporter = nodemailer.createTransport({
+                host: process.env.EMAIL_HOST,
+                port: Number(process.env.EMAIL_PORT),
+                secure: String(process.env.EMAIL_SECURE || 'false') === 'true',
+                auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
             });
+            return;
+        }
+
+        // Service-based (e.g., gmail, outlook)
+        if (process.env.EMAIL_SERVICE && process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+            this.transporter = nodemailer.createTransport({
+                service: process.env.EMAIL_SERVICE,
+                auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+            });
+            return;
+        }
+
+        // Development fallback: Ethereal test account
+        if ((process.env.NODE_ENV || 'development') !== 'production') {
+            nodemailer.createTestAccount().then((testAccount) => {
+                this.transporter = nodemailer.createTransport({
+                    host: 'smtp.ethereal.email',
+                    port: 587,
+                    secure: false,
+                    auth: { user: testAccount.user, pass: testAccount.pass }
+                });
+                console.log('✉️  Using Ethereal test SMTP. Login:', testAccount.user);
+                console.log('🔑 Password:', testAccount.pass);
+            }).catch(() => {});
         }
     }
 
@@ -26,7 +50,7 @@ class EmailService {
 
         try {
             const mailOptions = {
-                from: process.env.EMAIL_USER,
+                from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
                 to,
                 subject,
                 text,
@@ -35,6 +59,8 @@ class EmailService {
 
             const result = await this.transporter.sendMail(mailOptions);
             console.log('Email sent successfully:', result.messageId);
+            const preview = nodemailer.getTestMessageUrl ? nodemailer.getTestMessageUrl(result) : null;
+            if (preview) console.log('📨 Preview URL:', preview);
             return { success: true, messageId: result.messageId };
         } catch (error) {
             console.error('Error sending email:', error);

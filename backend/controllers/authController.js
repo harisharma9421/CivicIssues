@@ -1,50 +1,102 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const District = require("../models/District");
+const DistrictApplication = require("../models/DistrictApplication");
+const SuperAdmin = require("../models/SuperAdmin");
 const { auth } = require("../middleware/auth");
 
 exports.signup = async (req, res) => {
     try {
-        const { name, email, password, language, role, districtId, phoneNumber } = req.body;
+        const { name, username, email, password, language, role, districtId, phoneNumber, aadharNumber, districtName, state, latitude, longitude } = req.body;
 
         // Check if user already exists
-        const existingUser = await User.findOne({ email });
+        const existingUser = await User.findOne({ $or: [ { email }, { username } ] });
         if (existingUser) {
             return res.status(400).json({ 
                 success: false,
-                msg: "User already exists with this email" 
+                msg: existingUser.email === email ? "User already exists with this email" : "Username already taken" 
             });
         }
 
-        // Hash password
-        const hashedPassword = await bcrypt.hash(password, 12);
-        
-        // Create new user
-        const newUser = new User({ 
-            name, 
-            email, 
-            password: hashedPassword, 
-            language, 
-            role, 
-            districtId,
-            phoneNumber
-        });
-        
-        await newUser.save();
+        // Block writing to User collection for now
+        if (role === 'user') {
+            return res.status(400).json({ success: false, msg: 'User signup is disabled for now' });
+        }
 
-        // Generate token
-        const token = jwt.sign(
-            { id: newUser._id, role: newUser.role }, 
-            process.env.JWT_SECRET, 
-            { expiresIn: process.env.JWT_EXPIRE || "1d" }
-        );
+        // SUPER ADMIN: write to SuperAdmin collection instead of User
+        if (role === 'superAdmin') {
+            const existingSuper = await SuperAdmin.findOne({});
+            if (existingSuper) {
+                return res.status(400).json({ success: false, msg: 'A super admin already exists' });
+            }
 
-        res.status(201).json({ 
-            success: true,
-            msg: "Signup successful", 
-            token,
-            user: newUser.profile
-        });
+            const hashedPassword = await bcrypt.hash(password, 12);
+            const sa = new SuperAdmin({ name, email, password: hashedPassword });
+            await sa.save();
+            return res.status(201).json({ success: true, msg: 'Super admin created successfully' });
+        }
+
+        // ADMIN: store as pending DistrictApplication; actual District will be created only after super admin approval
+        if (role === 'admin') {
+            const payload = {
+                name: districtName,
+                state,
+                adminProfile: { name, username, email, phoneNumber, aadharNumber },
+                coordinates: (latitude !== undefined && longitude !== undefined) ? { lat: latitude, lng: longitude } : undefined
+            };
+            // Hash password into adminProfile.passwordHash
+            try {
+                payload.adminProfile.passwordHash = await bcrypt.hash(password, 12);
+            } catch (_) {}
+
+
+            // Enrich from reverse geocode if missing name/state
+            if ((!payload.name || !payload.state) && latitude !== undefined && longitude !== undefined) {
+                try {
+                    const { reverseGeocode } = require('../services/geocodeService');
+                    const geo = await reverseGeocode(latitude, longitude);
+                    if (geo) {
+                        payload.name = payload.name || geo.districtName;
+                        payload.state = payload.state || geo.state;
+                        payload.country = geo.country;
+                        payload.pincode = geo.pincode;
+                        payload.address = geo.address;
+                    }
+                } catch (_) {}
+            }
+
+            if (payload.coordinates) {
+                payload.location = { type: 'Point', coordinates: [Number(payload.coordinates.lng), Number(payload.coordinates.lat)] };
+            }
+
+            const application = new DistrictApplication(payload);
+            await application.save();
+
+            // Notify super admin
+            try {
+                const Notification = require('../models/Notification');
+                const SuperAdmin = require('../models/SuperAdmin');
+                const sa = await SuperAdmin.findOne({});
+                if (sa) {
+                    await Notification.create({
+                        recipientId: sa._id,
+                        recipientModel: 'SuperAdmin',
+                        title: 'New District Admin Application',
+                        message: `${name} applied for ${application.name || 'a district'} (${state || ''}).`,
+                        type: 'admin',
+                        priority: 'high',
+                        relatedEntity: 'district',
+                        relatedEntityId: application._id,
+                        actionUrl: '/superadmin/approvals'
+                    });
+                }
+            } catch (_) {}
+            return res.status(201).json({ success: true, msg: 'Admin registration submitted for super admin approval', applicationId: application._id });
+        }
+
+        // Fallback (should not reach)
+        return res.status(400).json({ success: false, msg: 'Unsupported role' });
     } catch (err) {
         console.error('Signup error:', err);
         res.status(500).json({ 
@@ -62,18 +114,28 @@ exports.login = async (req, res) => {
         // Find user and include district info
         const user = await User.findOne({ email }).populate('districtId', 'name state');
         if (!user) {
-            return res.status(400).json({ 
-                success: false,
-                msg: "Invalid credentials" 
-            });
+            // If no user found, check if there is a pending district application with this email
+            const pendingApp = await require('../models/DistrictApplication').findOne({ 'adminProfile.email': email, status: 'pending' });
+            if (pendingApp) {
+                return res.status(403).json({ success: false, msg: 'Your admin application is pending approval by super admin' });
+            }
+            return res.status(400).json({ success: false, msg: "Invalid credentials" });
         }
 
-        // Check if user is active
+        // Must be active
         if (!user.isActive) {
             return res.status(400).json({ 
                 success: false,
                 msg: "Account is deactivated" 
             });
+        }
+
+        // Admins must be approved before login
+        if (user.role === 'admin' && user.approvalStatus !== 'approved') {
+            return res.status(403).json({
+                success: false,
+                msg: user.approvalStatus === 'pending' ? 'Your account is pending approval by super admin' : 'Your account was rejected by super admin'
+            })
         }
 
         // Verify password
@@ -205,5 +267,66 @@ exports.changePassword = async (req, res) => {
         });
     }
 };
+
+// Forgot password: request OTP via email
+exports.requestPasswordOtp = async (req, res) => {
+    try {
+        let { channel, identifier } = req.body; // channel kept for backward-compat; defaults to 'email'
+        channel = 'email'
+        if (!identifier) return res.status(400).json({ success: false, msg: 'identifier is required' })
+        const role = 'admin' // admin side covers admin and user; we allow email lookup either way
+        const OtpService = require('../services/otpService')
+
+        // ensure user exists
+        const email = (identifier || '').trim().toLowerCase()
+        let accountRole = 'admin'
+        let user = await require('../models/User').findOne({ email })
+        if (!user) {
+            // Check embedded admin profile in Districts
+            const District = require('../models/District')
+            const district = await District.findOne({ 'adminProfile.email': email })
+            if (!district) return res.status(404).json({ success: false, msg: 'No account with this email' })
+        } else {
+            accountRole = user.role
+        }
+        await OtpService.sendOtpEmail(email, accountRole)
+
+        return res.json({ success: true, msg: 'OTP sent' })
+    } catch (err) {
+        console.error('Request password OTP error:', err)
+        res.status(500).json({ success: false, msg: 'Error sending OTP' })
+    }
+}
+
+// Forgot password: verify OTP and reset password (email-only)
+exports.verifyOtpAndResetPassword = async (req, res) => {
+    try {
+        const { identifier, code, newPassword } = req.body
+        if (!identifier || !code || !newPassword) {
+            return res.status(400).json({ success: false, msg: 'Missing required fields' })
+        }
+
+        const OtpService = require('../services/otpService')
+        const normalizedIdentifier = (identifier || '').trim().toLowerCase()
+        const verify = await OtpService.verifyOtp('email', normalizedIdentifier, 'admin', code)
+        if (!verify.success) return res.status(400).json({ success: false, msg: verify.msg || 'Invalid code' })
+
+        const bcrypt = require('bcryptjs')
+        const hashedPassword = await bcrypt.hash(newPassword, 12)
+
+        let user = await require('../models/User').findOneAndUpdate({ email: normalizedIdentifier }, { password: hashedPassword }, { new: true })
+        if (!user) {
+            const District = require('../models/District')
+            const district = await District.findOne({ 'adminProfile.email': normalizedIdentifier })
+            if (!district) return res.status(404).json({ success: false, msg: 'Account not found' })
+            await District.updateOne({ _id: district._id }, { $set: { 'adminProfile.passwordHash': hashedPassword } })
+        }
+
+        return res.json({ success: true, msg: 'Password reset successfully' })
+    } catch (err) {
+        console.error('Verify OTP and reset password error:', err)
+        res.status(500).json({ success: false, msg: 'Error resetting password' })
+    }
+}
 
 

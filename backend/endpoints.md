@@ -23,11 +23,18 @@ Register a new user
   "email": "john@example.com",
   "password": "password123",
   "language": "English",
-  "role": "user",
+  "role": "admin|superAdmin|user",
   "districtId": "64f8b1234567890abcdef123",
-  "phoneNumber": "9876543210"
+  "phoneNumber": "9876543210",
+  "aadharNumber": "123412341234",
+  "districtName": "Central Delhi",
+  "state": "Delhi"
 }
 ```
+
+Notes:
+- For role=admin, signup response returns success with `approvalStatus=pending` and DOES NOT issue a token until approved by super admin.
+- For role=superAdmin, only one super admin is allowed. Additional attempts will be rejected.
 
 ### POST /auth/login
 User login
@@ -37,6 +44,9 @@ User login
   "password": "password123"
 }
 ```
+
+Notes:
+- Admins with `approvalStatus=pending` or `rejected` cannot log in.
 
 ### GET /auth/profile
 Get current user profile
@@ -138,6 +148,16 @@ Get all users with optional filters
 - `sortOrder=desc|asc` (optional)
 
 ### GET /users/:id
+### PUT /users/:id/moderate
+Approve/reject an admin and assign district (Super Admin only)
+**Headers:** Authorization required (Super Admin)
+```json
+{
+  "action": "approve|reject",
+  "districtName": "Central Delhi",
+  "state": "Delhi"
+}
+```
 Get user by ID
 
 ### GET /users/:id/stats

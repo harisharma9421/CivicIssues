@@ -305,7 +305,26 @@ npm run lint:fix
 ```
 
 ### Environment Variables
-See `.env.example` for all required environment variables.
+See `.env.example` for all required environment variables. Key additions for OTP:
+
+```env
+# Email (Nodemailer)
+EMAIL_SERVICE=gmail
+EMAIL_USER=your_email@gmail.com
+EMAIL_PASS=your_app_password
+EMAIL_FROM="CivicConnect <no-reply@yourdomain.com>"
+
+# Twilio (SMS OTP)
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_AUTH_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_PHONE_FROM=+1XXXXXXXXXX
+# Optional: Twilio Verify (recommended for SMS OTP)
+TWILIO_VERIFY_SERVICE_SID=VAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# OTP config
+OTP_TTL_MS=300000
+OTP_MAX_ATTEMPTS=5
+```
 
 ## Production Deployment
 

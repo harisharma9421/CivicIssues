@@ -3,9 +3,10 @@ const {
     getAllUsers, 
     getUserById, 
     getUserStats, 
-    updateUserStatus 
+    updateUserStatus,
+    moderateAdmin
 } = require("../controllers/userController");
-const { auth, adminAuth } = require("../middleware/auth");
+const { auth, adminAuth, superAdminAuth } = require("../middleware/auth");
 
 const router = express.Router();
 
@@ -16,5 +17,6 @@ router.get("/:id/stats", getUserStats);
 
 // Admin routes
 router.put("/:id/status", auth, adminAuth, updateUserStatus);
+router.put("/:id/moderate", auth, superAdminAuth, moderateAdmin);
 
 module.exports = router;
